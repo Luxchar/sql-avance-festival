@@ -1,0 +1,18 @@
+services:
+  db:
+    image: postgres:16
+    container_name: festival-db
+    environment:
+      POSTGRES_USER: festival
+      POSTGRES_PASSWORD: festival
+      POSTGRES_DB: festival
+    ports:
+      - "${PORT_FESTIVAL:-5432}:5432"
+    volumes:
+      # Exécutés dans l'ordre alphabétique, au premier démarrage seulement
+      - ./01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./02_donnees.sql:/docker-entrypoint-initdb.d/02_donnees.sql:ro
+      - donnees:/var/lib/postgresql/data
+
+volumes:
+  donnees:
