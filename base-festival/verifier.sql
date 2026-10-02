@@ -1,5 +1,5 @@
 -- La base est-elle bien chargée ?
--- docker compose exec -T db psql -U festival -d festival < verifier.sql
+-- docker compose exec db psql -U festival -d festival -f /verifier.sql
 --
 -- Résultat attendu :
 --   artistes 36 | scenes 4 | concerts 36 | offres 9 | clients 150000

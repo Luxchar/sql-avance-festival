@@ -63,7 +63,7 @@ CREATE TABLE billets (
     scanne_le   timestamp
 );
 
--- L'organigramme de l'organisation : sert aux CTE récursives.
+-- L'organigramme de l'organisation.
 CREATE TABLE equipe (
     id              serial PRIMARY KEY,
     nom             text NOT NULL,

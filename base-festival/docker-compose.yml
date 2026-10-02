@@ -13,6 +13,9 @@ services:
       - ./01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./02_donnees.sql:/docker-entrypoint-initdb.d/02_donnees.sql:ro
       - donnees:/var/lib/postgresql/data
+      # Les scripts du cours, lisibles depuis le conteneur : psql -f /demos/seance-1.sql
+      - ../demos:/demos:ro
+      - ./verifier.sql:/verifier.sql:ro
 
 volumes:
   donnees:

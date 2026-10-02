@@ -1,162 +1,115 @@
--- Séance 3 : droits, vues, transactions, index
--- Les démos du cours, dans l'ordre. À lancer sur une base qui a reçu
--- demos/seance-1.sql (il faut la colonne vendus, les triggers et acheter()).
+-- Séance 3 : CTE et fonctions de fenêtre
+-- Les démos du cours, dans l'ordre. Ne modifie pas la base : tout est en lecture.
 
 
--- Partie 1 : rôles et privilèges ---------------------------------------------
+-- Partie 1 : les CTE ---------------------------------------------------------
 
--- Les rôles-métiers : on ne se connecte pas avec (NOLOGIN), on les attribue
-CREATE ROLE guichet NOLOGIN;
-CREATE ROLE compta  NOLOGIN;
+-- Une étape nommée, réutilisée deux fois
+WITH ventes_jour AS (
+    SELECT c.passee_le::date AS jour,
+           count(*)          AS billets,
+           sum(b.prix_paye)  AS ca
+    FROM billets b
+    JOIN commandes c ON c.id = b.commande_id
+    WHERE c.statut = 'payee'
+    GROUP BY 1
+)
+SELECT jour, billets, ca
+FROM ventes_jour
+WHERE billets > 3 * (SELECT avg(billets) FROM ventes_jour)
+ORDER BY jour;
 
--- Les personnes : elles se connectent (LOGIN) et héritent d'un rôle-métier
-CREATE ROLE emma LOGIN PASSWORD 'emma' IN ROLE guichet;
-CREATE ROLE hugo LOGIN PASSWORD 'hugo' IN ROLE compta;
-
--- Le guichet lit le programme et les offres, et quelques colonnes des clients
-GRANT SELECT ON offres, concerts, artistes, scenes TO guichet;
-GRANT SELECT (id, prenom, nom, ville) ON clients TO guichet;
-
-SET ROLE emma;
-SELECT libelle, prix FROM offres ORDER BY id LIMIT 2;    -- autorisé
-SELECT id, prenom, nom FROM clients WHERE id = 42;       -- autorisé : colonnes permises
-SELECT email FROM clients WHERE id = 42;                 -- refusé
-SELECT count(*) FROM commandes;                          -- refusé
-RESET ROLE;
-
--- Vendre sans avoir le droit d'écrire partout : SECURITY DEFINER
-SET ROLE emma;
-CALL acheter(42, 1, 1);                                  -- refusé : emma ne peut pas lire billets
-RESET ROLE;
-
-ALTER PROCEDURE acheter(int, int, int, text) SECURITY DEFINER SET search_path = public;
-REVOKE EXECUTE ON PROCEDURE acheter(int, int, int, text) FROM PUBLIC;
-GRANT EXECUTE ON PROCEDURE acheter(int, int, int, text) TO guichet;
-
-SET ROLE emma;
-CALL acheter(42, 1, 1);                                  -- autorisé : la procédure agit avec les droits de son propriétaire
-INSERT INTO billets (commande_id, offre_id, prix_paye) VALUES (1, 1, 0);   -- refusé : pas de raccourci
-RESET ROLE;
-
--- Retirer un droit
-GRANT SELECT ON commandes TO compta;
-REVOKE SELECT ON commandes FROM compta;
-
--- Qui a quoi ?
-\dp offres
-\du
+-- Plusieurs étapes à la suite
+WITH paniers AS (
+    SELECT c.id, c.canal, sum(b.prix_paye) AS montant
+    FROM commandes c
+    JOIN billets b ON b.commande_id = c.id
+    WHERE c.statut = 'payee'
+    GROUP BY c.id, c.canal
+),
+moyenne AS (
+    SELECT avg(montant) AS globale FROM paniers
+)
+SELECT p.canal,
+       round(avg(p.montant), 2)              AS panier_moyen,
+       round(avg(p.montant) - m.globale, 2)  AS ecart_a_la_moyenne
+FROM paniers p
+CROSS JOIN moyenne m
+GROUP BY p.canal, m.globale
+ORDER BY panier_moyen DESC;
 
 
--- Partie 2 : les vues --------------------------------------------------------
+-- Partie 2 : les fonctions de fenêtre ----------------------------------------
 
--- Une vue qui masque les données personnelles
-CREATE VIEW clients_masques AS
-SELECT id,
-       prenom,
-       left(nom, 1) || '.'                                    AS nom,
-       left(email, 1) || '***@' || split_part(email, '@', 2)  AS email,
-       left(telephone, 2) || ' ** ** ** ' || right(telephone, 2) AS telephone,
-       ville
-FROM clients;
+-- La part de chaque offre dans le total : le total est calculé sans écraser les lignes
+WITH par_offre AS (
+    SELECT o.libelle, count(*) AS billets
+    FROM billets b
+    JOIN commandes c ON c.id = b.commande_id
+    JOIN offres o ON o.id = b.offre_id
+    WHERE c.statut = 'payee'
+    GROUP BY o.libelle
+)
+SELECT libelle,
+       billets,
+       round(100.0 * billets / sum(billets) OVER (), 1) AS part_pct
+FROM par_offre
+ORDER BY billets DESC;
 
-REVOKE SELECT (id, prenom, nom, ville) ON clients FROM guichet;
-GRANT SELECT ON clients_masques TO guichet;
+-- Un classement par groupe : les artistes par genre, du mieux payé au moins payé
+SELECT genre, nom, cachet,
+       rank() OVER (PARTITION BY genre ORDER BY cachet DESC) AS rang
+FROM artistes
+ORDER BY genre, rang;
 
-SET ROLE emma;
-SELECT * FROM clients_masques WHERE id = 42;             -- autorisé, masqué
-SELECT * FROM clients WHERE id = 42;                     -- refusé
-RESET ROLE;
+-- Le top 1 de chaque genre : on classe dans une CTE, puis on filtre
+WITH classement AS (
+    SELECT genre, nom, cachet,
+           row_number() OVER (PARTITION BY genre ORDER BY cachet DESC) AS rang
+    FROM artistes
+)
+SELECT genre, nom, cachet
+FROM classement
+WHERE rang = 1
+ORDER BY cachet DESC;
 
--- Une vue qui cache la complexité : trois tables, un filtre, un regroupement
-CREATE VIEW ventes_par_jour AS
-SELECT c.passee_le::date AS jour,
-       c.canal,
-       count(*)          AS billets,
-       sum(b.prix_paye)  AS ca
-FROM commandes c
-JOIN billets b ON b.commande_id = c.id
-WHERE c.statut = 'payee'
-GROUP BY 1, 2;
+-- Le cumul des ventes, et la moyenne sur 7 jours glissants
+WITH ventes_jour AS (
+    SELECT c.passee_le::date AS jour, count(*) AS billets
+    FROM billets b
+    JOIN commandes c ON c.id = b.commande_id
+    WHERE c.statut = 'payee'
+    GROUP BY 1
+)
+SELECT jour,
+       billets,
+       sum(billets) OVER (ORDER BY jour) AS cumul,
+       round(avg(billets) OVER (ORDER BY jour ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)) AS moyenne_7j
+FROM ventes_jour
+ORDER BY jour
+LIMIT 12;
 
-GRANT SELECT ON ventes_par_jour TO compta;
-
-SET ROLE hugo;
-SELECT * FROM ventes_par_jour WHERE jour = '2026-03-03' ORDER BY canal;
-RESET ROLE;
-
--- Une vue matérialisée : le résultat est stocké, on le rafraîchit quand on veut
-CREATE MATERIALIZED VIEW remplissage AS
-SELECT libelle, quota, vendus, round(100.0 * vendus / quota, 1) AS remplissage_pct
-FROM offres;
-
-SELECT * FROM remplissage ORDER BY remplissage_pct DESC;
-REFRESH MATERIALIZED VIEW remplissage;
-
-
--- Partie 3 : les transactions ------------------------------------------------
-
--- Tout ou rien, à la main
-BEGIN;
-UPDATE offres SET prix = prix * 2;
-SELECT libelle, prix FROM offres ORDER BY id LIMIT 3;    -- les prix ont doublé...
-ROLLBACK;
-SELECT libelle, prix FROM offres ORDER BY id LIMIT 3;    -- ... et non : rien n'a été gardé
-
--- La course à la dernière place se joue à deux terminaux : voir le support.
--- Le correctif : verrouiller la ligne de l'offre avant de lire le compteur.
-CREATE OR REPLACE FUNCTION refuser_survente()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_offre offres%ROWTYPE;
-BEGIN
-    SELECT * INTO v_offre
-    FROM offres
-    WHERE id = NEW.offre_id
-    FOR UPDATE;                  -- les autres attendent ici que la transaction se termine
-
-    IF v_offre.vendus >= v_offre.quota THEN
-        RAISE EXCEPTION 'Offre « % » complète (% / %)', v_offre.libelle, v_offre.vendus, v_offre.quota;
-    END IF;
-
-    RETURN NEW;
-END;
-$$;
+-- Comparer à la ligne d'avant : les ventes mois par mois
+WITH ventes_mois AS (
+    SELECT date_trunc('month', c.passee_le)::date AS mois, count(*) AS billets
+    FROM billets b
+    JOIN commandes c ON c.id = b.commande_id
+    WHERE c.statut = 'payee'
+    GROUP BY 1
+)
+SELECT mois,
+       billets,
+       lag(billets) OVER (ORDER BY mois) AS mois_precedent,
+       round(100.0 * (billets - lag(billets) OVER (ORDER BY mois)) / lag(billets) OVER (ORDER BY mois), 1) AS evolution_pct
+FROM ventes_mois
+ORDER BY mois;
 
 
--- Partie 4 : index et EXPLAIN ------------------------------------------------
+-- Partie 3 : fabriquer des données -------------------------------------------
 
--- Les billets d'un client : sans index
-EXPLAIN ANALYZE
-SELECT b.*
-FROM billets b
-JOIN commandes c ON c.id = b.commande_id
-WHERE c.client_id = 1234;
-
-CREATE INDEX commandes_client_idx ON commandes (client_id);
-CREATE INDEX billets_commande_idx ON billets (commande_id);
-
--- La même requête, avec les index
-EXPLAIN ANALYZE
-SELECT b.*
-FROM billets b
-JOIN commandes c ON c.id = b.commande_id
-WHERE c.client_id = 1234;
-
--- Un index n'est pas toujours utilisé : trop de lignes correspondent
-CREATE INDEX commandes_canal_idx ON commandes (canal);
-EXPLAIN SELECT * FROM commandes WHERE canal = 'guichet';   -- 4 % des commandes : l'index sert
-EXPLAIN SELECT * FROM commandes WHERE canal = 'web';       -- 60 % : PostgreSQL lit toute la table
-DROP INDEX commandes_canal_idx;
-
--- Une fonction sur la colonne empêche d'utiliser son index
-EXPLAIN SELECT * FROM clients WHERE lower(email) = 'maelys.simon.1@proton.me';
-CREATE INDEX clients_email_lower_idx ON clients (lower(email));
-EXPLAIN SELECT * FROM clients WHERE lower(email) = 'maelys.simon.1@proton.me';
-
--- Ce que coûtent les index : de la place, et du temps à chaque écriture
-SELECT indexrelname AS index, pg_size_pretty(pg_relation_size(indexrelid)) AS taille
-FROM pg_stat_user_indexes
-WHERE relname IN ('billets', 'commandes', 'clients')
-ORDER BY pg_relation_size(indexrelid) DESC;
+-- generate_series produit des lignes ; random() les varie
+SELECT i,
+       'capteur-' || lpad(i::text, 3, '0') AS nom,
+       (ARRAY['ok', 'ok', 'ok', 'alerte', 'panne'])[1 + floor(random() * 5)::int] AS etat,
+       timestamp '2026-10-01' + random() * interval '15 days' AS vu_le
+FROM generate_series(1, 5) AS i;

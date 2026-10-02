@@ -3,6 +3,7 @@
 La base de démonstration du module **SQL avancé** (Bachelor 2, Ynov Paris, octobre 2026) : la billetterie d'un festival fictif de trois jours, avec 150 000 clients, 220 000 commandes et 408 325 billets.
 
 ```
+antiseche-sql.md  les bases à revoir avant la première séance
 base-festival/    la base : schéma, données générées, lancement avec Docker
 demos/            les démos du cours, séance par séance
 ```
@@ -25,15 +26,15 @@ La connexion avec un client graphique, le schéma des tables et les pannes coura
 
 ## Les démos
 
-Chaque fichier de `demos/` contient ce que l'enseignant montre en cours. Si vous avez pris du retard, exécutez-le avant le mini-TP, depuis `base-festival` :
+Chaque fichier de `demos/` contient ce que l'enseignant montre en cours. Si vous avez pris du retard, exécutez-le pour rattraper, depuis `base-festival` :
 
 ```bash
-docker compose exec -T db psql -U festival -d festival < ../demos/seance-1.sql
+docker compose exec db psql -U festival -d festival -f /demos/seance-1.sql
 ```
 
 Les messages d'erreur qui s'affichent sont voulus : ce sont les cas que la base doit refuser.
 
-La séance 3 suppose que la démo de la séance 1 est déjà passée.
+Les séances s'enchaînent : la démo d'une séance suppose que celles d'avant sont passées.
 
 ## Récupérer une mise à jour
 

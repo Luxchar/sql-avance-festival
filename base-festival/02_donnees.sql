@@ -184,7 +184,7 @@ WHERE p.client_id = cl.id
 
 -- Quotas ---------------------------------------------------------------------
 -- 10 % de marge partout, sauf le VIP samedi : il reste une seule place.
--- (C'est elle que deux clients vont s'arracher en séance 3.)
+-- (C'est elle que deux clients vont s'arracher en séance 5.)
 
 UPDATE offres o
 SET quota = CASE WHEN o.libelle = 'VIP samedi' THEN v.vendus + 1 ELSE ceil(v.vendus * 1.1) END

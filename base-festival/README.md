@@ -1,6 +1,6 @@
 # Festival Contre-Temps : la base de démonstration
 
-Trois jours de concerts, les 10, 11 et 12 juillet 2026. Quatre scènes, 36 artistes, et une billetterie ouverte depuis le 15 janvier. Toutes les notions du module se travaillent sur cette base avant d'être appliquées à NexusOps.
+Trois jours de concerts, les 10, 11 et 12 juillet 2026. Quatre scènes, 36 artistes, et une billetterie ouverte depuis le 15 janvier. Toutes les notions du module se travaillent sur cette base avant d'être appliquées à votre projet.
 
 ---
 
@@ -41,7 +41,7 @@ Avec un client graphique (DBeaver, pgAdmin, l'extension PostgreSQL de VS Code) :
 ### Vérifier le chargement
 
 ```bash
-docker compose exec -T db psql -U festival -d festival < verifier.sql
+docker compose exec db psql -U festival -d festival -f /verifier.sql
 ```
 
 Vous devez obtenir exactement 150 000 clients, 220 000 commandes et 408 325 billets. Les données sont tirées au hasard, mais avec une graine fixe : tout le monde a la même base.
@@ -50,7 +50,7 @@ Vous devez obtenir exactement 150 000 clients, 220 000 commandes et 408 325 bill
 
 | Symptôme | Cause et solution |
 |---|---|
-| `port is already allocated` | un autre PostgreSQL occupe le port 5432. Lancez `PORT_FESTIVAL=5433 docker compose up -d` et connectez-vous sur le port 5433 |
+| `port is already allocated` | un autre PostgreSQL occupe le port 5432. Lancez `PORT_FESTIVAL=5433 docker compose up -d` (dans PowerShell : `$env:PORT_FESTIVAL=5433; docker compose up -d`) et connectez-vous sur le port 5433 |
 | Les tables sont vides ou incomplètes | le chargement a été interrompu. Repartez de zéro (ci-dessous) |
 | Vous avez tout cassé | repartez de zéro (ci-dessous) |
 

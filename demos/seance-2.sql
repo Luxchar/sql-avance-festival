@@ -1,148 +1,91 @@
--- Séance 2 : CTE et fonctions de fenêtre
--- Les démos du cours, dans l'ordre. Ne modifie pas la base : tout est en lecture.
+-- Séance 2 : triggers
+-- Les démos du cours, dans l'ordre. À lancer sur une base qui a reçu
+-- demos/seance-1.sql (il faut places_vendues() et acheter()) :
+--   docker compose exec db psql -U festival -d festival -f /demos/seance-2.sql
 
 
--- Partie 1 : les CTE ---------------------------------------------------------
+-- Partie 1 : triggers --------------------------------------------------------
 
--- Une étape nommée, réutilisée deux fois
-WITH ventes_jour AS (
-    SELECT c.passee_le::date AS jour,
-           count(*)          AS billets,
-           sum(b.prix_paye)  AS ca
-    FROM billets b
-    JOIN commandes c ON c.id = b.commande_id
-    WHERE c.statut = 'payee'
-    GROUP BY 1
-)
-SELECT jour, billets, ca
-FROM ventes_jour
-WHERE billets > 3 * (SELECT avg(billets) FROM ventes_jour)
-ORDER BY jour;
+-- Un compteur tenu à jour tout seul.
+ALTER TABLE offres ADD COLUMN vendus integer NOT NULL DEFAULT 0;
+UPDATE offres SET vendus = places_vendues(id);
 
--- Plusieurs étapes à la suite
-WITH paniers AS (
-    SELECT c.id, c.canal, sum(b.prix_paye) AS montant
-    FROM commandes c
-    JOIN billets b ON b.commande_id = c.id
-    WHERE c.statut = 'payee'
-    GROUP BY c.id, c.canal
-),
-moyenne AS (
-    SELECT avg(montant) AS globale FROM paniers
-)
-SELECT p.canal,
-       round(avg(p.montant), 2)              AS panier_moyen,
-       round(avg(p.montant) - m.globale, 2)  AS ecart_a_la_moyenne
-FROM paniers p
-CROSS JOIN moyenne m
-GROUP BY p.canal, m.globale
-ORDER BY panier_moyen DESC;
+CREATE FUNCTION compter_billet()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE offres SET vendus = vendus + 1 WHERE id = NEW.offre_id;
+    RETURN NULL;   -- ignoré pour un trigger AFTER
+END;
+$$;
 
+CREATE TRIGGER billets_compter
+AFTER INSERT ON billets
+FOR EACH ROW
+EXECUTE FUNCTION compter_billet();
 
--- Partie 2 : les CTE récursives ----------------------------------------------
+-- La survente refusée, par tous les canaux.
+CREATE FUNCTION refuser_survente()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_offre offres%ROWTYPE;
+BEGIN
+    SELECT * INTO v_offre FROM offres WHERE id = NEW.offre_id;
 
--- L'organigramme, de haut en bas
-WITH RECURSIVE arbre AS (
-    SELECT id, nom, poste, 0 AS niveau, nom AS chemin
-    FROM equipe
-    WHERE responsable_id IS NULL
+    IF v_offre.vendus >= v_offre.quota THEN
+        RAISE EXCEPTION 'Offre « % » complète (% / %)', v_offre.libelle, v_offre.vendus, v_offre.quota;
+    END IF;
 
-    UNION ALL
+    RETURN NEW;    -- BEFORE : la ligne continue son chemin
+END;
+$$;
 
-    SELECT e.id, e.nom, e.poste, a.niveau + 1, a.chemin || ' > ' || e.nom
-    FROM equipe e
-    JOIN arbre a ON e.responsable_id = a.id
-)
-SELECT repeat('    ', niveau) || nom || ' (' || poste || ')' AS organigramme
-FROM arbre
-ORDER BY chemin;
+CREATE TRIGGER billets_refuser_survente
+BEFORE INSERT ON billets
+FOR EACH ROW
+EXECUTE FUNCTION refuser_survente();
 
--- La chaîne de commandement, de bas en haut
-WITH RECURSIVE chefs AS (
-    SELECT id, nom, poste, responsable_id
-    FROM equipe
-    WHERE nom = 'Kevin Hoarau'
+-- Le guichet insère directement, sans passer par acheter() :
+INSERT INTO commandes (client_id, canal) VALUES (7, 'guichet');
+INSERT INTO billets (commande_id, offre_id, prix_paye) VALUES (currval('commandes_id_seq'), 7, 169);   -- la dernière place : OK
+INSERT INTO billets (commande_id, offre_id, prix_paye) VALUES (currval('commandes_id_seq'), 7, 169);   -- refusé
+SELECT libelle, vendus, quota FROM offres WHERE id = 7;
 
-    UNION ALL
+-- Un journal d'audit.
+CREATE TABLE journal_clients (
+    id          bigserial PRIMARY KEY,
+    client_id   integer NOT NULL,
+    operation   text NOT NULL,
+    avant       jsonb,
+    apres       jsonb,
+    par         text NOT NULL DEFAULT current_user,
+    le          timestamp NOT NULL DEFAULT now()
+);
 
-    SELECT e.id, e.nom, e.poste, e.responsable_id
-    FROM equipe e
-    JOIN chefs c ON e.id = c.responsable_id
-)
-SELECT nom, poste FROM chefs;
+CREATE FUNCTION journaliser_client()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        INSERT INTO journal_clients (client_id, operation, avant)
+        VALUES (OLD.id, TG_OP, to_jsonb(OLD));
+    ELSE
+        INSERT INTO journal_clients (client_id, operation, avant, apres)
+        VALUES (NEW.id, TG_OP, to_jsonb(OLD), to_jsonb(NEW));
+    END IF;
+    RETURN NULL;
+END;
+$$;
 
+CREATE TRIGGER clients_journaliser
+AFTER UPDATE OR DELETE ON clients
+FOR EACH ROW
+EXECUTE FUNCTION journaliser_client();
 
--- Partie 3 : les fonctions de fenêtre ----------------------------------------
-
--- La part de chaque offre dans le total : le total est calculé sans écraser les lignes
-WITH par_offre AS (
-    SELECT o.libelle, count(*) AS billets
-    FROM billets b
-    JOIN commandes c ON c.id = b.commande_id
-    JOIN offres o ON o.id = b.offre_id
-    WHERE c.statut = 'payee'
-    GROUP BY o.libelle
-)
-SELECT libelle,
-       billets,
-       round(100.0 * billets / sum(billets) OVER (), 1) AS part_pct
-FROM par_offre
-ORDER BY billets DESC;
-
--- Un classement par groupe : les artistes par genre, du mieux payé au moins payé
-SELECT genre, nom, cachet,
-       rank() OVER (PARTITION BY genre ORDER BY cachet DESC) AS rang
-FROM artistes
-ORDER BY genre, rang;
-
--- Le top 1 de chaque genre : on classe dans une CTE, puis on filtre
-WITH classement AS (
-    SELECT genre, nom, cachet,
-           row_number() OVER (PARTITION BY genre ORDER BY cachet DESC) AS rang
-    FROM artistes
-)
-SELECT genre, nom, cachet
-FROM classement
-WHERE rang = 1
-ORDER BY cachet DESC;
-
--- Le cumul des ventes, et la moyenne sur 7 jours glissants
-WITH ventes_jour AS (
-    SELECT c.passee_le::date AS jour, count(*) AS billets
-    FROM billets b
-    JOIN commandes c ON c.id = b.commande_id
-    WHERE c.statut = 'payee'
-    GROUP BY 1
-)
-SELECT jour,
-       billets,
-       sum(billets) OVER (ORDER BY jour) AS cumul,
-       round(avg(billets) OVER (ORDER BY jour ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)) AS moyenne_7j
-FROM ventes_jour
-ORDER BY jour
-LIMIT 12;
-
--- Comparer à la ligne d'avant : les ventes mois par mois
-WITH ventes_mois AS (
-    SELECT date_trunc('month', c.passee_le)::date AS mois, count(*) AS billets
-    FROM billets b
-    JOIN commandes c ON c.id = b.commande_id
-    WHERE c.statut = 'payee'
-    GROUP BY 1
-)
-SELECT mois,
-       billets,
-       lag(billets) OVER (ORDER BY mois) AS mois_precedent,
-       round(100.0 * (billets - lag(billets) OVER (ORDER BY mois)) / lag(billets) OVER (ORDER BY mois), 1) AS evolution_pct
-FROM ventes_mois
-ORDER BY mois;
-
-
--- Partie 4 : fabriquer des données -------------------------------------------
-
--- generate_series produit des lignes ; random() les varie
-SELECT i,
-       'capteur-' || lpad(i::text, 3, '0') AS nom,
-       (ARRAY['ok', 'ok', 'ok', 'alerte', 'panne'])[1 + floor(random() * 5)::int] AS etat,
-       timestamp '2026-10-01' + random() * interval '15 days' AS vu_le
-FROM generate_series(1, 5) AS i;
+UPDATE clients SET telephone = '0700000000' WHERE id = 42;
+SELECT client_id, operation, avant ->> 'telephone' AS avant, apres ->> 'telephone' AS apres, par, le
+FROM journal_clients;
