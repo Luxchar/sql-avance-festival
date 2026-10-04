@@ -1,4 +1,4 @@
--- Séance 2 : triggers et transactions
+-- Séance 2 : triggers, transactions, index
 -- Les démos du cours, dans l'ordre. À lancer sur une base qui a reçu
 -- demos/seance-1.sql (il faut places_vendues() et acheter()) :
 --   docker compose exec db psql -U festival -d festival -f /demos/seance-2.sql
@@ -72,6 +72,37 @@ ROLLBACK;
 SELECT libelle, prix FROM offres ORDER BY id LIMIT 3;    -- ... et non : rien n'a été gardé
 
 
+-- Partie 3 : index et EXPLAIN ------------------------------------------------
+
+-- Les billets d'un client : sans index.
+EXPLAIN ANALYZE
+SELECT b.*
+FROM billets b
+JOIN commandes c ON c.id = b.commande_id
+WHERE c.client_id = 1234;
+
+CREATE INDEX commandes_client_idx ON commandes (client_id);
+CREATE INDEX billets_commande_idx ON billets (commande_id);
+
+-- La même requête, avec les index.
+EXPLAIN ANALYZE
+SELECT b.*
+FROM billets b
+JOIN commandes c ON c.id = b.commande_id
+WHERE c.client_id = 1234;
+
+-- Un index n'est pas toujours utilisé : trop de lignes correspondent.
+CREATE INDEX commandes_canal_idx ON commandes (canal);
+EXPLAIN SELECT * FROM commandes WHERE canal = 'guichet';   -- 4 % des commandes : l'index sert
+EXPLAIN SELECT * FROM commandes WHERE canal = 'web';       -- 60 % : PostgreSQL lit toute la table
+DROP INDEX commandes_canal_idx;
+
+-- Ce que coûtent les index : de la place, et du temps à chaque écriture.
+SELECT indexrelname AS index, pg_size_pretty(pg_relation_size(indexrelid)) AS taille
+FROM pg_stat_user_indexes
+WHERE indexrelname IN ('commandes_client_idx', 'billets_commande_idx');
+
+
 -- Pour aller plus loin -------------------------------------------------------
 
 -- La course à la dernière place (à deux terminaux, voir la fin du support) :
@@ -96,3 +127,8 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+-- Une fonction sur la colonne empêche d'utiliser son index : on indexe l'expression.
+EXPLAIN SELECT * FROM clients WHERE lower(email) = 'maelys.simon.1@proton.me';
+CREATE INDEX clients_email_lower_idx ON clients (lower(email));
+EXPLAIN SELECT * FROM clients WHERE lower(email) = 'maelys.simon.1@proton.me';
