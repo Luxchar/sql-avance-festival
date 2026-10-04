@@ -71,8 +71,11 @@ SELECT libelle, prix FROM offres ORDER BY id LIMIT 3;    -- les prix ont doublé
 ROLLBACK;
 SELECT libelle, prix FROM offres ORDER BY id LIMIT 3;    -- ... et non : rien n'a été gardé
 
--- La course à la dernière place se joue à deux terminaux : voir le support.
--- Le correctif : verrouiller la ligne de l'offre avant de lire le compteur.
+
+-- Pour aller plus loin -------------------------------------------------------
+
+-- La course à la dernière place (à deux terminaux, voir la fin du support) :
+-- le correctif verrouille la ligne de l'offre avant de lire le compteur.
 CREATE OR REPLACE FUNCTION refuser_survente()
 RETURNS trigger
 LANGUAGE plpgsql
