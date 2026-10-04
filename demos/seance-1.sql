@@ -24,22 +24,25 @@ ORDER BY id;
 
 -- 2. Une fonction avec des conditions ----------------------------------------
 
-CREATE FUNCTION prix_reduit(p_prix numeric, p_age int)
-RETURNS numeric
+-- L'état d'une offre : le site, l'appli et le guichet doivent afficher le même.
+CREATE FUNCTION etat_offre(p_restantes bigint)
+RETURNS text
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF p_age < 12 THEN
-        RETURN 0;                          -- gratuit pour les enfants
-    ELSIF p_age < 26 THEN
-        RETURN round(p_prix * 0.8, 2);     -- 20 % de réduction pour les jeunes
+    IF p_restantes <= 0 THEN
+        RETURN 'complet';
+    ELSIF p_restantes < 100 THEN
+        RETURN 'dernières places';
     ELSE
-        RETURN p_prix;
+        RETURN 'disponible';
     END IF;
 END;
 $$;
 
-SELECT libelle, prix, prix_reduit(prix, 8) AS enfant, prix_reduit(prix, 20) AS jeune, prix_reduit(prix, 40) AS adulte
+SELECT libelle,
+       quota - places_vendues(id)             AS restantes,
+       etat_offre(quota - places_vendues(id)) AS etat
 FROM offres
 ORDER BY id;
 
