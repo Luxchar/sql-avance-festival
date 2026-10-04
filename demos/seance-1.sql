@@ -4,12 +4,12 @@
 --   docker compose exec db psql -U festival -d festival -f /demos/seance-1.sql
 
 
--- Partie 1 : fonctions -------------------------------------------------------
+-- Partie 1 : les fonctions ---------------------------------------------------
 
--- Une fonction SQL : une seule requête, un résultat.
+-- Une fonction SQL : une requête, un résultat.
 CREATE FUNCTION places_vendues(p_offre_id int)
 RETURNS bigint
-LANGUAGE sql STABLE
+LANGUAGE sql
 AS $$
     SELECT count(*)
     FROM billets b
@@ -18,91 +18,70 @@ AS $$
       AND c.statut = 'payee';
 $$;
 
-SELECT libelle, quota, places_vendues(id), quota - places_vendues(id) AS restantes
+SELECT libelle, quota, places_vendues(id) AS vendues, quota - places_vendues(id) AS restantes
 FROM offres
 ORDER BY id;
 
--- Une fonction PL/pgSQL : variables, conditions.
-CREATE FUNCTION tranche_age(p_naissance date)
-RETURNS text
-LANGUAGE plpgsql IMMUTABLE
+-- Une fonction PL/pgSQL : des conditions.
+CREATE FUNCTION prix_reduit(p_prix numeric, p_age int)
+RETURNS numeric
+LANGUAGE plpgsql
 AS $$
-DECLARE
-    v_age int := extract(year FROM age(date '2026-07-10', p_naissance));
 BEGIN
-    IF v_age < 18 THEN
-        RETURN 'mineur';
-    ELSIF v_age < 26 THEN
-        RETURN '18-25';
-    ELSIF v_age < 36 THEN
-        RETURN '26-35';
+    IF p_age < 12 THEN
+        RETURN 0;                          -- gratuit pour les enfants
+    ELSIF p_age < 26 THEN
+        RETURN round(p_prix * 0.8, 2);     -- 20 % de réduction pour les jeunes
     ELSE
-        RETURN '36 et plus';
+        RETURN p_prix;
     END IF;
 END;
 $$;
 
-SELECT tranche_age(date_naissance) AS tranche, count(*)
-FROM clients
-GROUP BY 1
-ORDER BY 1;
-
--- Une fonction qui renvoie une table.
-CREATE FUNCTION programme(p_jour date)
-RETURNS TABLE (heure time, scene text, artiste text)
-LANGUAGE sql STABLE
-AS $$
-    SELECT c.debut::time, s.nom, a.nom
-    FROM concerts c
-    JOIN scenes s ON s.id = c.scene_id
-    JOIN artistes a ON a.id = c.artiste_id
-    WHERE c.debut::date = p_jour
-    ORDER BY c.debut DESC, s.id;
-$$;
-
-SELECT * FROM programme('2026-07-11');
+SELECT libelle, prix, prix_reduit(prix, 8) AS enfant, prix_reduit(prix, 20) AS jeune, prix_reduit(prix, 40) AS adulte
+FROM offres
+ORDER BY id;
 
 
--- Partie 2 : procédures ------------------------------------------------------
+-- Partie 2 : les procédures --------------------------------------------------
 
-CREATE PROCEDURE acheter(p_client_id int, p_offre_id int, p_quantite int, p_canal text DEFAULT 'web')
+CREATE PROCEDURE acheter(p_client_id int, p_offre_id int, p_quantite int)
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_restantes bigint;
+    v_restantes int;
     v_prix      numeric;
     v_commande  int;
 BEGIN
-    IF p_quantite NOT BETWEEN 1 AND 4 THEN
-        RAISE EXCEPTION 'Entre 1 et 4 billets par commande (demandé : %)', p_quantite;
-    END IF;
-
+    -- 1. Vérifier qu'il reste assez de places
     SELECT quota - places_vendues(id), prix
     INTO v_restantes, v_prix
     FROM offres
     WHERE id = p_offre_id;
 
-    IF NOT FOUND THEN
-        RAISE EXCEPTION 'Offre % inconnue', p_offre_id;
-    END IF;
-
     IF v_restantes < p_quantite THEN
         RAISE EXCEPTION 'Plus assez de places : % restante(s), % demandée(s)', v_restantes, p_quantite;
     END IF;
 
+    -- 2. Écrire la commande, et récupérer son numéro
     INSERT INTO commandes (client_id, canal)
-    VALUES (p_client_id, p_canal)
+    VALUES (p_client_id, 'web')
     RETURNING id INTO v_commande;
 
-    INSERT INTO billets (commande_id, offre_id, prix_paye)
-    SELECT v_commande, p_offre_id, v_prix
-    FROM generate_series(1, p_quantite);
-
-    RAISE NOTICE 'Commande % : % billet(s)', v_commande, p_quantite;
+    -- 3. Écrire les billets
+    FOR i IN 1..p_quantite LOOP
+        INSERT INTO billets (commande_id, offre_id, prix_paye)
+        VALUES (v_commande, p_offre_id, v_prix);
+    END LOOP;
 END;
 $$;
 
 CALL acheter(42, 1, 2);        -- deux pass vendredi : ça passe
 CALL acheter(42, 7, 2);        -- VIP samedi : il en reste une seule, refusé
+
+-- Tout ou rien : l'offre 999 n'existe pas. La commande est écrite, puis le
+-- billet échoue : la commande est annulée avec lui.
+CALL acheter(42, 999, 1);
+
 SELECT count(*) FROM commandes WHERE client_id = 42 AND passee_le > '2026-08-01';
--- 1 seule commande : la seconde a été annulée en entier, rien n'est resté à moitié
+-- 1 seule commande : les deux achats refusés n'ont rien laissé derrière eux

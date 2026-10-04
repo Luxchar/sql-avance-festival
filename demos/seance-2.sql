@@ -1,12 +1,12 @@
--- Séance 2 : triggers
+-- Séance 2 : triggers et transactions
 -- Les démos du cours, dans l'ordre. À lancer sur une base qui a reçu
 -- demos/seance-1.sql (il faut places_vendues() et acheter()) :
 --   docker compose exec db psql -U festival -d festival -f /demos/seance-2.sql
 
 
--- Partie 1 : triggers --------------------------------------------------------
+-- Partie 1 : les triggers ----------------------------------------------------
 
--- Un compteur tenu à jour tout seul.
+-- Démo 1 : un compteur tenu à jour tout seul (AFTER).
 ALTER TABLE offres ADD COLUMN vendus integer NOT NULL DEFAULT 0;
 UPDATE offres SET vendus = places_vendues(id);
 
@@ -16,7 +16,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
     UPDATE offres SET vendus = vendus + 1 WHERE id = NEW.offre_id;
-    RETURN NULL;   -- ignoré pour un trigger AFTER
+    RETURN NULL;   -- AFTER : la valeur renvoyée est ignorée
 END;
 $$;
 
@@ -25,18 +25,25 @@ AFTER INSERT ON billets
 FOR EACH ROW
 EXECUTE FUNCTION compter_billet();
 
--- La survente refusée, par tous les canaux.
+SELECT libelle, vendus FROM offres WHERE id = 1;
+CALL acheter(42, 1, 1);
+SELECT libelle, vendus FROM offres WHERE id = 1;    -- un de plus, sans rien recompter
+
+-- Démo 2 : la survente refusée, par tous les canaux (BEFORE).
 CREATE FUNCTION refuser_survente()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_offre offres%ROWTYPE;
+    v_vendus int;
+    v_quota  int;
 BEGIN
-    SELECT * INTO v_offre FROM offres WHERE id = NEW.offre_id;
+    SELECT vendus, quota INTO v_vendus, v_quota
+    FROM offres
+    WHERE id = NEW.offre_id;
 
-    IF v_offre.vendus >= v_offre.quota THEN
-        RAISE EXCEPTION 'Offre « % » complète (% / %)', v_offre.libelle, v_offre.vendus, v_offre.quota;
+    IF v_vendus >= v_quota THEN
+        RAISE EXCEPTION 'Offre % complète : % places vendues sur %', NEW.offre_id, v_vendus, v_quota;
     END IF;
 
     RETURN NEW;    -- BEFORE : la ligne continue son chemin
@@ -50,42 +57,39 @@ EXECUTE FUNCTION refuser_survente();
 
 -- Le guichet insère directement, sans passer par acheter() :
 INSERT INTO commandes (client_id, canal) VALUES (7, 'guichet');
-INSERT INTO billets (commande_id, offre_id, prix_paye) VALUES (currval('commandes_id_seq'), 7, 169);   -- la dernière place : OK
-INSERT INTO billets (commande_id, offre_id, prix_paye) VALUES (currval('commandes_id_seq'), 7, 169);   -- refusé
+INSERT INTO billets (commande_id, offre_id, prix_paye) VALUES (currval('commandes_id_seq'), 7, 169);   -- la dernière place : acceptée
+INSERT INTO billets (commande_id, offre_id, prix_paye) VALUES (currval('commandes_id_seq'), 7, 169);   -- refusée
 SELECT libelle, vendus, quota FROM offres WHERE id = 7;
 
--- Un journal d'audit.
-CREATE TABLE journal_clients (
-    id          bigserial PRIMARY KEY,
-    client_id   integer NOT NULL,
-    operation   text NOT NULL,
-    avant       jsonb,
-    apres       jsonb,
-    par         text NOT NULL DEFAULT current_user,
-    le          timestamp NOT NULL DEFAULT now()
-);
 
-CREATE FUNCTION journaliser_client()
+-- Partie 2 : les transactions ------------------------------------------------
+
+-- Tout ou rien, à la main.
+BEGIN;
+UPDATE offres SET prix = prix * 2;
+SELECT libelle, prix FROM offres ORDER BY id LIMIT 3;    -- les prix ont doublé...
+ROLLBACK;
+SELECT libelle, prix FROM offres ORDER BY id LIMIT 3;    -- ... et non : rien n'a été gardé
+
+-- La course à la dernière place se joue à deux terminaux : voir le support.
+-- Le correctif : verrouiller la ligne de l'offre avant de lire le compteur.
+CREATE OR REPLACE FUNCTION refuser_survente()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
+DECLARE
+    v_vendus int;
+    v_quota  int;
 BEGIN
-    IF TG_OP = 'DELETE' THEN
-        INSERT INTO journal_clients (client_id, operation, avant)
-        VALUES (OLD.id, TG_OP, to_jsonb(OLD));
-    ELSE
-        INSERT INTO journal_clients (client_id, operation, avant, apres)
-        VALUES (NEW.id, TG_OP, to_jsonb(OLD), to_jsonb(NEW));
+    SELECT vendus, quota INTO v_vendus, v_quota
+    FROM offres
+    WHERE id = NEW.offre_id
+    FOR UPDATE;                  -- les autres attendent ici que la transaction se termine
+
+    IF v_vendus >= v_quota THEN
+        RAISE EXCEPTION 'Offre % complète : % places vendues sur %', NEW.offre_id, v_vendus, v_quota;
     END IF;
-    RETURN NULL;
+
+    RETURN NEW;
 END;
 $$;
-
-CREATE TRIGGER clients_journaliser
-AFTER UPDATE OR DELETE ON clients
-FOR EACH ROW
-EXECUTE FUNCTION journaliser_client();
-
-UPDATE clients SET telephone = '0700000000' WHERE id = 42;
-SELECT client_id, operation, avant ->> 'telephone' AS avant, apres ->> 'telephone' AS apres, par, le
-FROM journal_clients;
